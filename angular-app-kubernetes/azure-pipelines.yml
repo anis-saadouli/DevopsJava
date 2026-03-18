@@ -11,8 +11,7 @@ pr:
 
 variables:
   - group: New variable group 18-Mar
-  - name: poolName
-    value: Default
+  # Remove poolName variable, use vmImage directly
   - name: imageRepository
     value: $(DOCKERHUB_USERNAME)/$(IMAGE_NAME)
   - name: imageTag
@@ -26,7 +25,7 @@ stages:
     jobs:
       - job: Checkout
         pool:
-          name: $(poolName)
+          vmImage: 'ubuntu-latest'
         steps:
           - checkout: self
             clean: true
@@ -37,7 +36,7 @@ stages:
     jobs:
       - job: AngularBuild
         pool:
-          name: $(poolName)
+          vmImage: 'ubuntu-latest'
         steps:
           - checkout: self
 
@@ -65,7 +64,7 @@ stages:
     jobs:
       - job: DockerBuild
         pool:
-          name: $(poolName)
+          vmImage: 'ubuntu-latest'
         steps:
           - checkout: self
 
@@ -88,7 +87,7 @@ stages:
     jobs:
       - job: TrivyScan
         pool:
-          name: $(poolName)
+          vmImage: 'ubuntu-latest'
         steps:
           - task: DownloadPipelineArtifact@2
             displayName: Download Docker image artifact
@@ -108,7 +107,7 @@ stages:
     jobs:
       - job: Push
         pool:
-          name: $(poolName)
+          vmImage: 'ubuntu-latest'
         steps:
           - task: DownloadPipelineArtifact@2
             displayName: Download Docker image artifact
@@ -138,7 +137,7 @@ stages:
     jobs:
       - job: DeployToK8s
         pool:
-          name: $(poolName)
+          vmImage: 'ubuntu-latest'
         steps:
           - checkout: self
 
