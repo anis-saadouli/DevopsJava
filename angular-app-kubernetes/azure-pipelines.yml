@@ -163,59 +163,34 @@ stages:
     dependsOn: PushImage
     condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
     jobs:
-      - deployment: DeployToK8s
+      - job: DeployToK8s
         pool:
           name: $(poolName)
-        environment: k8s-prod
-        strategy:
-          runOnce:
-            deploy:
-              steps:
-                - checkout: self
+        steps:
+          - checkout: self
 
-                - task: Bash@3
-                  displayName: Render deployment image tag
-                  inputs:
-                    targetType: inline
-                    script: |
-                      set -e
-                      IMAGE="$(imageRepository):$(imageTag)"
-                      sed "s|__IMAGE__|$IMAGE|g" $(Build.SourcesDirectory)/k8s/deployment.yaml > $(Build.SourcesDirectory)/k8s/deployment.rendered.yaml
+          - script: |
+              set -e
+              IMAGE="$(imageRepository):$(imageTag)"
+              sed "s|__IMAGE__|$IMAGE|g" $(Build.SourcesDirectory)/k8s/deployment.yaml > $(Build.SourcesDirectory)/k8s/deployment.rendered.yaml
+            displayName: Render deployment image tag
 
-                - task: Kubernetes@1
-                  displayName: Apply namespace
-                  inputs:
-                    connectionType: Kubernetes Service Connection
-                    kubernetesServiceEndpoint: sc-k8s-local
-                    command: apply
-                    useConfigurationFile: true
-                    configuration: $(Build.SourcesDirectory)/k8s/namespace.yaml
+          - script: |
+              set -e
+              kubectl apply -f $(Build.SourcesDirectory)/k8s/namespace.yaml
+            displayName: Apply namespace
 
-                - task: Kubernetes@1
-                  displayName: Apply deployment
-                  inputs:
-                    connectionType: Kubernetes Service Connection
-                    kubernetesServiceEndpoint: sc-k8s-local
-                    namespace: $(k8sNamespace)
-                    command: apply
-                    useConfigurationFile: true
-                    configuration: $(Build.SourcesDirectory)/k8s/deployment.rendered.yaml
+          - script: |
+              set -e
+              kubectl apply -f $(Build.SourcesDirectory)/k8s/deployment.rendered.yaml -n $(k8sNamespace)
+            displayName: Apply deployment
 
-                - task: Kubernetes@1
-                  displayName: Apply service
-                  inputs:
-                    connectionType: Kubernetes Service Connection
-                    kubernetesServiceEndpoint: sc-k8s-local
-                    namespace: $(k8sNamespace)
-                    command: apply
-                    useConfigurationFile: true
-                    configuration: $(Build.SourcesDirectory)/k8s/service.yaml
+          - script: |
+              set -e
+              kubectl apply -f $(Build.SourcesDirectory)/k8s/service.yaml -n $(k8sNamespace)
+            displayName: Apply service
 
-                - task: Kubernetes@1
-                  displayName: Verify rollout
-                  inputs:
-                    connectionType: Kubernetes Service Connection
-                    kubernetesServiceEndpoint: sc-k8s-local
-                    namespace: $(k8sNamespace)
-                    command: rollout
-                    arguments: status deployment/angular-frontend --timeout=180s
+          - script: |
+              set -e
+              kubectl rollout status deployment/angular-frontend -n $(k8sNamespace) --timeout=180s
+            displayName: Verify rollout
