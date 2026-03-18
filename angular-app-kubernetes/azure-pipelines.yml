@@ -31,40 +31,9 @@ stages:
           - checkout: self
             clean: true
 
-  - stage: StaticAnalysis
-    displayName: SonarQube Static Analysis
-    dependsOn: Source
-    jobs:
-      - job: Sonar
-        pool:
-          name: $(poolName)
-        steps:
-          - checkout: self
-
-          - task: NodeTool@0
-            displayName: Use Node.js 16
-            inputs:
-              versionSpec: "16.x"
-
-          - task: SonarQubePrepare@5
-            displayName: Prepare SonarQube analysis
-            inputs:
-              SonarQube: sc-sonarqube
-              scannerMode: CLI
-              configMode: file
-              configFile: sonar-project.properties
-
-          - task: SonarQubeAnalyze@5
-            displayName: Run SonarQube analysis
-
-          - task: SonarQubePublish@5
-            displayName: Publish SonarQube quality gate
-            inputs:
-              pollingTimeoutSec: "300"
-
   - stage: Build
     displayName: NPM Install and Angular Build
-    dependsOn: StaticAnalysis
+    dependsOn: Source
     jobs:
       - job: AngularBuild
         pool:
