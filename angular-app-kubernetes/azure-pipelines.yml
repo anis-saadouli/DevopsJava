@@ -10,11 +10,15 @@ pr:
       - main
 
 variables:
-  poolName: Azure Pipelines
-  dockerHubUser: your-dockerhub-username
-  imageRepository: $(dockerHubUser)/devopsjava-angular
-  imageTag: $(Build.BuildId)
-  k8sNamespace: devops-frontend
+  - group: New variable group 18-Mar
+  - name: poolName
+    value: Default
+  - name: imageRepository
+    value: $(DOCKERHUB_USERNAME)/$(IMAGE_NAME)
+  - name: imageTag
+    value: $(IMAGE_TAG)
+  - name: k8sNamespace
+    value: devops-frontend
 
 stages:
   - stage: Source
