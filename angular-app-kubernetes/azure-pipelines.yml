@@ -10,7 +10,7 @@ pr:
       - main
 
 variables:
-  poolName: SelfHostedLinux
+  poolName: Azure Pipelines
   dockerHubUser: your-dockerhub-username
   imageRepository: $(dockerHubUser)/devopsjava-angular
   imageTag: $(Build.BuildId)
