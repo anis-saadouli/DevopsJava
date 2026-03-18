@@ -1,0 +1,221 @@
+trigger:
+  branches:
+    include:
+      - dev
+      - main
+
+pr:
+  branches:
+    include:
+      - main
+
+variables:
+  poolName: SelfHostedLinux
+  dockerHubUser: your-dockerhub-username
+  imageRepository: $(dockerHubUser)/devopsjava-angular
+  imageTag: $(Build.BuildId)
+  k8sNamespace: devops-frontend
+
+stages:
+  - stage: Source
+    displayName: Source Checkout
+    jobs:
+      - job: Checkout
+        pool:
+          name: $(poolName)
+        steps:
+          - checkout: self
+            clean: true
+
+  - stage: StaticAnalysis
+    displayName: SonarQube Static Analysis
+    dependsOn: Source
+    jobs:
+      - job: Sonar
+        pool:
+          name: $(poolName)
+        steps:
+          - checkout: self
+
+          - task: NodeTool@0
+            displayName: Use Node.js 16
+            inputs:
+              versionSpec: "16.x"
+
+          - task: SonarQubePrepare@5
+            displayName: Prepare SonarQube analysis
+            inputs:
+              SonarQube: sc-sonarqube
+              scannerMode: CLI
+              configMode: file
+              configFile: sonar-project.properties
+
+          - task: SonarQubeAnalyze@5
+            displayName: Run SonarQube analysis
+
+          - task: SonarQubePublish@5
+            displayName: Publish SonarQube quality gate
+            inputs:
+              pollingTimeoutSec: "300"
+
+  - stage: Build
+    displayName: NPM Install and Angular Build
+    dependsOn: StaticAnalysis
+    jobs:
+      - job: AngularBuild
+        pool:
+          name: $(poolName)
+        steps:
+          - checkout: self
+
+          - task: NodeTool@0
+            displayName: Use Node.js 16
+            inputs:
+              versionSpec: "16.x"
+
+          - script: npm ci --legacy-peer-deps
+            displayName: npm install
+
+          - script: npm run build -- --configuration production
+            displayName: npm build
+
+          - task: PublishPipelineArtifact@1
+            displayName: Publish Angular dist artifact
+            inputs:
+              targetPath: dist/angular-app
+              artifact: angular-dist
+              publishLocation: pipeline
+
+  - stage: Containerization
+    displayName: Build Docker Image
+    dependsOn: Build
+    jobs:
+      - job: DockerBuild
+        pool:
+          name: $(poolName)
+        steps:
+          - checkout: self
+
+          - script: |
+              set -e
+              docker build -t $(imageRepository):$(imageTag) -t $(imageRepository):latest -f Dockerfile .
+              docker save $(imageRepository):$(imageTag) -o $(Build.ArtifactStagingDirectory)/image.tar
+            displayName: Build and save Docker image
+
+          - task: PublishPipelineArtifact@1
+            displayName: Publish Docker image artifact
+            inputs:
+              targetPath: $(Build.ArtifactStagingDirectory)/image.tar
+              artifact: docker-image
+              publishLocation: pipeline
+
+  - stage: SecurityScan
+    displayName: Trivy Security Scan
+    dependsOn: Containerization
+    jobs:
+      - job: TrivyScan
+        pool:
+          name: $(poolName)
+        steps:
+          - task: DownloadPipelineArtifact@2
+            displayName: Download Docker image artifact
+            inputs:
+              artifact: docker-image
+              path: $(Pipeline.Workspace)
+
+          - script: |
+              set -e
+              docker load -i $(Pipeline.Workspace)/image.tar
+              trivy image --exit-code 1 --severity HIGH,CRITICAL $(imageRepository):$(imageTag)
+            displayName: Scan Docker image with Trivy
+
+  - stage: PushImage
+    displayName: Push Image to DockerHub
+    dependsOn: SecurityScan
+    jobs:
+      - job: Push
+        pool:
+          name: $(poolName)
+        steps:
+          - task: DownloadPipelineArtifact@2
+            displayName: Download Docker image artifact
+            inputs:
+              artifact: docker-image
+              path: $(Pipeline.Workspace)
+
+          - script: docker load -i $(Pipeline.Workspace)/image.tar
+            displayName: Load Docker image
+
+          - task: Docker@2
+            displayName: Docker login to DockerHub
+            inputs:
+              command: login
+              containerRegistry: sc-dockerhub
+
+          - script: |
+              set -e
+              docker push $(imageRepository):$(imageTag)
+              docker push $(imageRepository):latest
+            displayName: Push Docker image
+
+  - stage: Deploy
+    displayName: Deploy to Kubernetes
+    dependsOn: PushImage
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: DeployToK8s
+        pool:
+          name: $(poolName)
+        environment: k8s-prod
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: Bash@3
+                  displayName: Render deployment image tag
+                  inputs:
+                    targetType: inline
+                    script: |
+                      set -e
+                      IMAGE="$(imageRepository):$(imageTag)"
+                      sed "s|__IMAGE__|$IMAGE|g" $(Build.SourcesDirectory)/k8s/deployment.yaml > $(Build.SourcesDirectory)/k8s/deployment.rendered.yaml
+
+                - task: Kubernetes@1
+                  displayName: Apply namespace
+                  inputs:
+                    connectionType: Kubernetes Service Connection
+                    kubernetesServiceEndpoint: sc-k8s-local
+                    command: apply
+                    useConfigurationFile: true
+                    configuration: $(Build.SourcesDirectory)/k8s/namespace.yaml
+
+                - task: Kubernetes@1
+                  displayName: Apply deployment
+                  inputs:
+                    connectionType: Kubernetes Service Connection
+                    kubernetesServiceEndpoint: sc-k8s-local
+                    namespace: $(k8sNamespace)
+                    command: apply
+                    useConfigurationFile: true
+                    configuration: $(Build.SourcesDirectory)/k8s/deployment.rendered.yaml
+
+                - task: Kubernetes@1
+                  displayName: Apply service
+                  inputs:
+                    connectionType: Kubernetes Service Connection
+                    kubernetesServiceEndpoint: sc-k8s-local
+                    namespace: $(k8sNamespace)
+                    command: apply
+                    useConfigurationFile: true
+                    configuration: $(Build.SourcesDirectory)/k8s/service.yaml
+
+                - task: Kubernetes@1
+                  displayName: Verify rollout
+                  inputs:
+                    connectionType: Kubernetes Service Connection
+                    kubernetesServiceEndpoint: sc-k8s-local
+                    namespace: $(k8sNamespace)
+                    command: rollout
+                    arguments: status deployment/angular-frontend --timeout=180s
