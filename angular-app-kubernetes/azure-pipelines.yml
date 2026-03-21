@@ -45,7 +45,13 @@ stages:
             inputs:
               versionSpec: "16.x"
 
-          - script: npm ci --legacy-peer-deps
+          - script: |
+              set -e
+              if [ -f package-lock.json ]; then
+                npm ci --legacy-peer-deps
+              else
+                npm install --legacy-peer-deps
+              fi
             displayName: npm install
 
           - script: npm run build -- --configuration production
