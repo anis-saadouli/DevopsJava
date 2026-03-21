@@ -12,7 +12,8 @@ RUN npm run build -- --configuration production
 
 # 2) Runtime stage
 FROM nginx:1.27-alpine
-RUN rm -rf /usr/share/nginx/html/*
+RUN apk update && apk upgrade --no-cache \
+	&& rm -rf /usr/share/nginx/html/*
 COPY --from=build /app/dist/angular-app /usr/share/nginx/html
 
 EXPOSE 80

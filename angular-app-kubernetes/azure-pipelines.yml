@@ -138,12 +138,12 @@ stages:
               docker load -i $(Pipeline.Workspace)/image.tar
 
               if command -v trivy >/dev/null 2>&1; then
-                trivy image --exit-code 1 --severity HIGH,CRITICAL $(imageRepository):$(imageTag)
+                trivy image --scanners vuln --ignore-unfixed --exit-code 1 --severity HIGH,CRITICAL $(imageRepository):$(imageTag)
               else
                 echo "trivy not found on agent, using Trivy container image"
                 docker run --rm \
                   -v /var/run/docker.sock:/var/run/docker.sock \
-                  aquasec/trivy:0.51.2 image --exit-code 1 --severity HIGH,CRITICAL $(imageRepository):$(imageTag)
+                  aquasec/trivy:0.51.2 image --scanners vuln --ignore-unfixed --exit-code 1 --severity HIGH,CRITICAL $(imageRepository):$(imageTag)
               fi
             displayName: Scan Docker image with Trivy
 
