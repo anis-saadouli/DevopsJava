@@ -94,7 +94,21 @@ stages:
 
           - script: |
               set -e
-              docker build -t $(imageRepository):$(imageTag) -t $(imageRepository):latest -f Dockerfile .
+              DOCKERFILE_PATH="$(Build.SourcesDirectory)/Dockerfile"
+              if [ ! -f "$DOCKERFILE_PATH" ]; then
+                DOCKERFILE_PATH="$(find "$(Build.SourcesDirectory)" -maxdepth 4 -type f -name Dockerfile | head -n 1)"
+              fi
+
+              if [ -z "$DOCKERFILE_PATH" ] || [ ! -f "$DOCKERFILE_PATH" ]; then
+                echo "Dockerfile not found under $(Build.SourcesDirectory)"
+                exit 1
+              fi
+
+              DOCKER_CONTEXT="$(dirname "$DOCKERFILE_PATH")"
+              echo "Using Dockerfile: $DOCKERFILE_PATH"
+              echo "Using Docker context: $DOCKER_CONTEXT"
+
+              docker build -t $(imageRepository):$(imageTag) -t $(imageRepository):latest -f "$DOCKERFILE_PATH" "$DOCKER_CONTEXT"
               docker save $(imageRepository):$(imageTag) -o $(Build.ArtifactStagingDirectory)/image.tar
             displayName: Build and save Docker image
 
@@ -168,22 +182,38 @@ stages:
           - script: |
               set -e
               IMAGE="$(imageRepository):$(imageTag)"
-              sed "s|__IMAGE__|$IMAGE|g" $(Build.SourcesDirectory)/k8s/deployment.yaml > $(Build.SourcesDirectory)/k8s/deployment.rendered.yaml
+              K8S_DIR="$(Build.SourcesDirectory)/k8s"
+              if [ ! -f "$K8S_DIR/deployment.yaml" ]; then
+                DEPLOYMENT_FILE="$(find "$(Build.SourcesDirectory)" -maxdepth 5 -type f -path '*/k8s/deployment.yaml' | head -n 1)"
+                if [ -n "$DEPLOYMENT_FILE" ]; then
+                  K8S_DIR="$(dirname "$DEPLOYMENT_FILE")"
+                fi
+              fi
+
+              if [ ! -f "$K8S_DIR/deployment.yaml" ] || [ ! -f "$K8S_DIR/service.yaml" ] || [ ! -f "$K8S_DIR/namespace.yaml" ]; then
+                echo "k8s manifests not found under $(Build.SourcesDirectory)"
+                exit 1
+              fi
+
+              echo "Using k8s directory: $K8S_DIR"
+              echo "##vso[task.setvariable variable=k8sDir]$K8S_DIR"
+
+              sed "s|__IMAGE__|$IMAGE|g" "$K8S_DIR/deployment.yaml" > "$K8S_DIR/deployment.rendered.yaml"
             displayName: Render deployment image tag
 
           - script: |
               set -e
-              kubectl apply -f $(Build.SourcesDirectory)/k8s/namespace.yaml
+              kubectl apply -f $(k8sDir)/namespace.yaml
             displayName: Apply namespace
 
           - script: |
               set -e
-              kubectl apply -f $(Build.SourcesDirectory)/k8s/deployment.rendered.yaml -n $(k8sNamespace)
+              kubectl apply -f $(k8sDir)/deployment.rendered.yaml -n $(k8sNamespace)
             displayName: Apply deployment
 
           - script: |
               set -e
-              kubectl apply -f $(Build.SourcesDirectory)/k8s/service.yaml -n $(k8sNamespace)
+              kubectl apply -f $(k8sDir)/service.yaml -n $(k8sNamespace)
             displayName: Apply service
 
           - script: |
