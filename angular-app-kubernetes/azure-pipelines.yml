@@ -172,6 +172,7 @@ stages:
 
           - script: |
               set -e
+              docker tag $(imageRepository):$(imageTag) $(imageRepository):latest
               docker push $(imageRepository):$(imageTag)
               docker push $(imageRepository):latest
             displayName: Push Docker image
