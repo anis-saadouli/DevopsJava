@@ -97,13 +97,11 @@ stages:
             inputs:
               versionSpec: "16.x"
 
-          - task: SonarQubePrepare@5
-            displayName: Prepare SonarQube Analysis
-            inputs:
-              SonarQube: 'sc-sonarqube'
-              scannerMode: 'CLI'
-              configMode: 'file'
-              configFile: '$(Build.SourcesDirectory)/sonar-project.properties'
+          - script: |
+              set -e
+              echo "Installing SonarQube Scanner..."
+              npm install -g sonarqube-scanner
+            displayName: Install SonarScanner
 
           - script: |
               set -e
@@ -123,13 +121,30 @@ stages:
               fi
             displayName: npm install
 
-          - task: SonarQubeAnalyze@5
-            displayName: Run SonarQube Analysis
+          - script: |
+              set -e
+              APP_ROOT="$(Build.SourcesDirectory)"
+              if [ ! -f "$APP_ROOT/package.json" ]; then
+                PKG_FILE="$(find "$(Build.SourcesDirectory)" -maxdepth 4 -type f -name package.json | head -n 1)"
+                if [ -n "$PKG_FILE" ]; then
+                  APP_ROOT="$(dirname "$PKG_FILE")"
+                fi
+              fi
 
-          - task: SonarQubePublish@5
-            displayName: Publish SonarQube Quality Gate
-            inputs:
-              pollingTimeoutSec: '300'
+              cd "$APP_ROOT"
+              echo "Running SonarQube analysis..."
+              sonar-scanner \
+                -Dsonar.projectBaseDir=. \
+                -Dsonar.host.url=$(SONAR_HOST_URL) \
+                -Dsonar.login=$(SONAR_LOGIN) \
+                -Dsonar.sources=src \
+                -Dsonar.exclusions='**/*.spec.ts,**/node_modules/**,**/dist/**,**/*.css' \
+                -Dsonar.tests=src \
+                -Dsonar.test.inclusions='**/*.spec.ts'
+            displayName: Run SonarQube Analysis
+            env:
+              SONAR_HOST_URL: $(SONAR_HOST_URL)
+              SONAR_LOGIN: $(SONAR_LOGIN)
 
   - stage: Containerization
     displayName: Build Docker Image
@@ -278,3 +293,4 @@ stages:
               set -e
               kubectl rollout status deployment/angular-frontend -n $(k8sNamespace) --timeout=180s
             displayName: Verify rollout
+
