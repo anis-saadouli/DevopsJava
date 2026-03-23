@@ -82,9 +82,58 @@ stages:
               artifact: angular-dist
               publishLocation: pipeline
 
+  - stage: CodeQuality
+    displayName: SonarQube Code Analysis
+    dependsOn: Build
+    jobs:
+      - job: SonarAnalysis
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: self
+
+          - task: NodeTool@0
+            displayName: Use Node.js 16
+            inputs:
+              versionSpec: "16.x"
+
+          - task: SonarQubePrepare@5
+            displayName: Prepare SonarQube Analysis
+            inputs:
+              SonarQube: 'sc-sonarqube'
+              scannerMode: 'CLI'
+              configMode: 'file'
+              configFile: '$(Build.SourcesDirectory)/sonar-project.properties'
+
+          - script: |
+              set -e
+              APP_ROOT="$(Build.SourcesDirectory)"
+              if [ ! -f "$APP_ROOT/package.json" ]; then
+                PKG_FILE="$(find "$(Build.SourcesDirectory)" -maxdepth 4 -type f -name package.json | head -n 1)"
+                if [ -n "$PKG_FILE" ]; then
+                  APP_ROOT="$(dirname "$PKG_FILE")"
+                fi
+              fi
+
+              cd "$APP_ROOT"
+              if [ -f package-lock.json ]; then
+                npm ci --legacy-peer-deps
+              else
+                npm install --legacy-peer-deps
+              fi
+            displayName: npm install
+
+          - task: SonarQubeAnalyze@5
+            displayName: Run SonarQube Analysis
+
+          - task: SonarQubePublish@5
+            displayName: Publish SonarQube Quality Gate
+            inputs:
+              pollingTimeoutSec: '300'
+
   - stage: Containerization
     displayName: Build Docker Image
-    dependsOn: Build
+    dependsOn: CodeQuality
     jobs:
       - job: DockerBuild
         pool:
