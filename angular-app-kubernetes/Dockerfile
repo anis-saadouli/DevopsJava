@@ -14,6 +14,9 @@ RUN npm run build -- --configuration production
 FROM nginx:1.27-alpine
 RUN apk update && apk upgrade --no-cache \
 	&& rm -rf /usr/share/nginx/html/*
+
+# Angular SPA routing + security headers + asset caching
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist/angular-app /usr/share/nginx/html
 
 EXPOSE 80

@@ -11,17 +11,21 @@ pr:
 
 variables:
   - group: New variable group 18-Mar
-  # Remove poolName variable, use vmImage directly
+  # imageTag uses the pipeline build ID for unique, traceable image versions
   - name: imageRepository
     value: $(DOCKERHUB_USERNAME)/$(IMAGE_NAME)
   - name: imageTag
-    value: $(IMAGE_TAG)
+    value: $(Build.BuildId)
   - name: k8sNamespace
     value: devops-frontend
 
 stages:
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # STAGE 1 — Source Checkout  (git clone from GitHub)
+  # ──────────────────────────────────────────────────────────────────────────
   - stage: Source
-    displayName: Source Checkout
+    displayName: "1 · Source Checkout"
     jobs:
       - job: Checkout
         pool:
@@ -29,10 +33,69 @@ stages:
         steps:
           - checkout: self
             clean: true
+            displayName: Clone repository
 
-  - stage: Build
-    displayName: NPM Install and Angular Build
+  # ──────────────────────────────────────────────────────────────────────────
+  # STAGE 2 — Static Code Analysis  (SonarQube — blocks on quality gate)
+  # ──────────────────────────────────────────────────────────────────────────
+  - stage: StaticAnalysis
+    displayName: "2 · Static Code Analysis"
     dependsOn: Source
+    jobs:
+      - job: SonarAnalysis
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: self
+
+          - task: NodeTool@0
+            displayName: Use Node.js 16
+            inputs:
+              versionSpec: "16.x"
+
+          - script: |
+              set -e
+              APP_ROOT="$(Build.SourcesDirectory)"
+              if [ ! -f "$APP_ROOT/package.json" ]; then
+                PKG_FILE="$(find "$(Build.SourcesDirectory)" -maxdepth 4 -type f -name package.json | head -n 1)"
+                [ -n "$PKG_FILE" ] && APP_ROOT="$(dirname "$PKG_FILE")"
+              fi
+              echo "##vso[task.setvariable variable=appRoot]$APP_ROOT"
+              cd "$APP_ROOT"
+              if [ -f package-lock.json ]; then
+                npm ci --legacy-peer-deps
+              else
+                npm install --legacy-peer-deps
+              fi
+            displayName: npm install (SonarQube needs it)
+
+          - script: |
+              set -e
+              npm install -g sonarqube-scanner
+              cd "$(appRoot)"
+              # -Dsonar.qualitygate.wait=true  →  scanner polls until the gate
+              # result is available and exits non-zero if the gate fails,
+              # which stops this stage and prevents the build from continuing.
+              sonar-scanner \
+                -Dsonar.projectBaseDir=. \
+                -Dsonar.host.url=$(SONAR_HOST_URL) \
+                -Dsonar.login=$(SONAR_LOGIN) \
+                -Dsonar.sources=src \
+                -Dsonar.exclusions='**/*.spec.ts,**/node_modules/**,**/dist/**,**/*.css' \
+                -Dsonar.tests=src \
+                -Dsonar.test.inclusions='**/*.spec.ts' \
+                -Dsonar.qualitygate.wait=true
+            displayName: Run SonarQube Analysis + Quality Gate
+            env:
+              SONAR_HOST_URL: $(SONAR_HOST_URL)
+              SONAR_LOGIN: $(SONAR_LOGIN)
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # STAGE 3 — Build  (npm install + Angular production build)
+  # ──────────────────────────────────────────────────────────────────────────
+  - stage: Build
+    displayName: "3 · NPM Install and Angular Build"
+    dependsOn: StaticAnalysis
     jobs:
       - job: AngularBuild
         pool:
@@ -54,15 +117,12 @@ stages:
                   APP_ROOT="$(dirname "$PKG_FILE")"
                 fi
               fi
-
               if [ -z "$APP_ROOT" ] || [ ! -f "$APP_ROOT/package.json" ]; then
                 echo "package.json not found under $(Build.SourcesDirectory)"
                 exit 1
               fi
-
               echo "Using app root: $APP_ROOT"
               echo "##vso[task.setvariable variable=appRoot]$APP_ROOT"
-
               cd "$APP_ROOT"
               if [ -f package-lock.json ]; then
                 npm ci --legacy-peer-deps
@@ -72,7 +132,7 @@ stages:
             displayName: npm install
 
           - script: npm run build -- --configuration production
-            displayName: npm build
+            displayName: npm build (Angular production)
             workingDirectory: $(appRoot)
 
           - task: PublishPipelineArtifact@1
@@ -82,73 +142,12 @@ stages:
               artifact: angular-dist
               publishLocation: pipeline
 
-  - stage: CodeQuality
-    displayName: SonarQube Code Analysis
-    dependsOn: Build
-    jobs:
-      - job: SonarAnalysis
-        pool:
-          vmImage: 'ubuntu-latest'
-        steps:
-          - checkout: self
-
-          - task: NodeTool@0
-            displayName: Use Node.js 16
-            inputs:
-              versionSpec: "16.x"
-
-          - script: |
-              set -e
-              echo "Installing SonarQube Scanner..."
-              npm install -g sonarqube-scanner
-            displayName: Install SonarScanner
-
-          - script: |
-              set -e
-              APP_ROOT="$(Build.SourcesDirectory)"
-              if [ ! -f "$APP_ROOT/package.json" ]; then
-                PKG_FILE="$(find "$(Build.SourcesDirectory)" -maxdepth 4 -type f -name package.json | head -n 1)"
-                if [ -n "$PKG_FILE" ]; then
-                  APP_ROOT="$(dirname "$PKG_FILE")"
-                fi
-              fi
-
-              cd "$APP_ROOT"
-              if [ -f package-lock.json ]; then
-                npm ci --legacy-peer-deps
-              else
-                npm install --legacy-peer-deps
-              fi
-            displayName: npm install
-
-          - script: |
-              set -e
-              APP_ROOT="$(Build.SourcesDirectory)"
-              if [ ! -f "$APP_ROOT/package.json" ]; then
-                PKG_FILE="$(find "$(Build.SourcesDirectory)" -maxdepth 4 -type f -name package.json | head -n 1)"
-                if [ -n "$PKG_FILE" ]; then
-                  APP_ROOT="$(dirname "$PKG_FILE")"
-                fi
-              fi
-
-              cd "$APP_ROOT"
-              echo "Running SonarQube analysis..."
-              sonar-scanner \
-                -Dsonar.projectBaseDir=. \
-                -Dsonar.host.url=$(SONAR_HOST_URL) \
-                -Dsonar.login=$(SONAR_LOGIN) \
-                -Dsonar.sources=src \
-                -Dsonar.exclusions='**/*.spec.ts,**/node_modules/**,**/dist/**,**/*.css' \
-                -Dsonar.tests=src \
-                -Dsonar.test.inclusions='**/*.spec.ts'
-            displayName: Run SonarQube Analysis
-            env:
-              SONAR_HOST_URL: $(SONAR_HOST_URL)
-              SONAR_LOGIN: $(SONAR_LOGIN)
-
+  # ──────────────────────────────────────────────────────────────────────────
+  # STAGE 4 — Containerization  (Docker multi-stage build)
+  # ──────────────────────────────────────────────────────────────────────────
   - stage: Containerization
-    displayName: Build Docker Image
-    dependsOn: CodeQuality
+    displayName: "4 · Build Docker Image"
+    dependsOn: Build
     jobs:
       - job: DockerBuild
         pool:
@@ -172,7 +171,10 @@ stages:
               echo "Using Dockerfile: $DOCKERFILE_PATH"
               echo "Using Docker context: $DOCKER_CONTEXT"
 
-              docker build -t $(imageRepository):$(imageTag) -t $(imageRepository):latest -f "$DOCKERFILE_PATH" "$DOCKER_CONTEXT"
+              docker build \
+                -t $(imageRepository):$(imageTag) \
+                -t $(imageRepository):latest \
+                -f "$DOCKERFILE_PATH" "$DOCKER_CONTEXT"
               docker save $(imageRepository):$(imageTag) -o $(Build.ArtifactStagingDirectory)/image.tar
             displayName: Build and save Docker image
 
@@ -183,8 +185,11 @@ stages:
               artifact: docker-image
               publishLocation: pipeline
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # STAGE 5 — Security Scan  (Trivy — pipeline fails on HIGH/CRITICAL)
+  # ──────────────────────────────────────────────────────────────────────────
   - stage: SecurityScan
-    displayName: Trivy Security Scan
+    displayName: "5 · Trivy Security Scan"
     dependsOn: Containerization
     jobs:
       - job: TrivyScan
@@ -200,22 +205,25 @@ stages:
           - script: |
               set -e
               docker load -i $(Pipeline.Workspace)/image.tar
-
-              if command -v trivy >/dev/null 2>&1; then
-                trivy image --scanners vuln --ignore-unfixed --exit-code 1 --severity HIGH,CRITICAL $(imageRepository):$(imageTag)
-              else
-                echo "trivy not found on agent, using Trivy container image"
-                docker run --rm \
-                  -v /var/run/docker.sock:/var/run/docker.sock \
-                  aquasec/trivy:0.51.2 image --scanners vuln --ignore-unfixed --exit-code 1 --severity HIGH,CRITICAL $(imageRepository):$(imageTag)
-              fi
+              echo "Running Trivy vulnerability scan (HIGH/CRITICAL = fail)..."
+              docker run --rm \
+                -v /var/run/docker.sock:/var/run/docker.sock \
+                aquasec/trivy:0.51.2 image \
+                  --scanners vuln \
+                  --ignore-unfixed \
+                  --exit-code 1 \
+                  --severity HIGH,CRITICAL \
+                  $(imageRepository):$(imageTag)
             displayName: Scan Docker image with Trivy
 
-  - stage: PushImage
-    displayName: Push Image to DockerHub
+  # ──────────────────────────────────────────────────────────────────────────
+  # STAGE 6 — Image Registry  (DockerHub push — both tagged + latest)
+  # ──────────────────────────────────────────────────────────────────────────
+  - stage: ImageRegistry
+    displayName: "6 · Push Image to DockerHub"
     dependsOn: SecurityScan
     jobs:
-      - job: Push
+      - job: PushImage
         pool:
           vmImage: 'ubuntu-latest'
         steps:
@@ -229,21 +237,26 @@ stages:
             displayName: Load Docker image
 
           - task: Docker@2
-            displayName: Docker login to DockerHub
+            displayName: Login to DockerHub
             inputs:
               command: login
               containerRegistry: sc-dockerhub
 
           - script: |
               set -e
-              docker tag $(imageRepository):$(imageTag) $(imageRepository):latest
               docker push $(imageRepository):$(imageTag)
               docker push $(imageRepository):latest
-            displayName: Push Docker image
+              echo "Pushed: $(imageRepository):$(imageTag)"
+              echo "Pushed: $(imageRepository):latest"
+            displayName: Push Docker image to DockerHub
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # STAGE 7 — Kubernetes Deployment
+  #   Condition: main branch only  |  requires successful image push
+  # ──────────────────────────────────────────────────────────────────────────
   - stage: Deploy
-    displayName: Deploy to Kubernetes
-    dependsOn: PushImage
+    displayName: "7 · Deploy to Kubernetes"
+    dependsOn: ImageRegistry
     condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
     jobs:
       - job: DeployToK8s
@@ -252,27 +265,37 @@ stages:
         steps:
           - checkout: self
 
+          # Configure kubectl with the kubeconfig from the kubeadm master node.
+          # Store the base64-encoded kubeconfig in the variable group as KUBE_CONFIG:
+          #   On master node: cat ~/.kube/config | base64 -w 0
+          #   Paste the output as a secret variable named KUBE_CONFIG
+          - script: |
+              set -e
+              mkdir -p ~/.kube
+              echo "$(KUBE_CONFIG)" | base64 -d > ~/.kube/config
+              chmod 600 ~/.kube/config
+              kubectl cluster-info
+            displayName: Configure kubectl (kubeadm cluster)
+            env:
+              KUBE_CONFIG: $(KUBE_CONFIG)
+
           - script: |
               set -e
               IMAGE="$(imageRepository):$(imageTag)"
               K8S_DIR="$(Build.SourcesDirectory)/k8s"
               if [ ! -f "$K8S_DIR/deployment.yaml" ]; then
                 DEPLOYMENT_FILE="$(find "$(Build.SourcesDirectory)" -maxdepth 5 -type f -path '*/k8s/deployment.yaml' | head -n 1)"
-                if [ -n "$DEPLOYMENT_FILE" ]; then
-                  K8S_DIR="$(dirname "$DEPLOYMENT_FILE")"
-                fi
+                [ -n "$DEPLOYMENT_FILE" ] && K8S_DIR="$(dirname "$DEPLOYMENT_FILE")"
               fi
-
               if [ ! -f "$K8S_DIR/deployment.yaml" ] || [ ! -f "$K8S_DIR/service.yaml" ] || [ ! -f "$K8S_DIR/namespace.yaml" ]; then
                 echo "k8s manifests not found under $(Build.SourcesDirectory)"
                 exit 1
               fi
-
               echo "Using k8s directory: $K8S_DIR"
               echo "##vso[task.setvariable variable=k8sDir]$K8S_DIR"
-
               sed "s|__IMAGE__|$IMAGE|g" "$K8S_DIR/deployment.yaml" > "$K8S_DIR/deployment.rendered.yaml"
-            displayName: Render deployment image tag
+              echo "Rendered image: $IMAGE"
+            displayName: Render deployment manifest (inject image tag)
 
           - script: |
               set -e
@@ -292,5 +315,5 @@ stages:
           - script: |
               set -e
               kubectl rollout status deployment/angular-frontend -n $(k8sNamespace) --timeout=180s
-            displayName: Verify rollout
+            displayName: Verify rollout status
 
